@@ -3,15 +3,20 @@ import streamlit as st
 from google import genai
 from prompt_library import SOP_CONFIG
 
-# Read key from Streamlit Cloud Secrets, or fall back to local environment
+# 1. Fetch API key safely from Streamlit Secrets
 api_key = st.secrets.get("GEMINI_API_KEY", None)
-client = genai.Client(api_key=api_key) if api_key else genai.Client()
 
-# Cloud models with fast throughput and large context handling
-CANDIDATE_MODELS = [
+if not api_key:
+    raise ValueError(
+        "GEMINI_API_KEY is missing. Please add it to your Streamlit App Settings -> Secrets."
+    )
+
+client = genai.Client(api_key=api_key)
+
+# 2. Only active, production models (no retired 2.x versions)
+ACTIVE_MODELS = [
     "gemini-3.8-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
+    "gemini-3.6-flash",
 ]
 
 
@@ -31,7 +36,7 @@ AUDIT INSTRUCTIONS:
 2. Check for duplicate headings or repetitive paragraphs across sections.
 3. Check for mandatory ending sections: Summary, Keywords, Self-Assessment Questions (SAQs), and References.
 4. Verify there are zero mentions of 'AI', 'ChatGPT', or discriminatory language.
-5. If errors or formatting redundancies exist, you MUST deduct points and detail them in the Required Corrections.
+5. If errors exist, you MUST deduct points and detail them in the Required Corrections.
 
 Output strictly valid JSON matching this schema:
 {{
@@ -72,8 +77,8 @@ Output strictly valid JSON matching this schema:
 
     user_message = f"Subject: {subject}\n\nDOCUMENT CONTENT TO EVALUATE:\n{content}"
 
-    last_error = None
-    for model_name in CANDIDATE_MODELS:
+    error_log = []
+    for model_name in ACTIVE_MODELS:
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -86,9 +91,9 @@ Output strictly valid JSON matching this schema:
             )
             return json.loads(response.text)
         except Exception as e:
-            last_error = e
+            error_log.append(f"[{model_name}]: {str(e)}")
             continue
 
     raise RuntimeError(
-        f"Evaluation failed across candidate models. Error: {last_error}"
+        "Cloud model call failed. Details:\n" + "\n".join(error_log)
     )
