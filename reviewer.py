@@ -1,9 +1,10 @@
 import json
+import os
 import time
+import streamlit as st
 from google import genai
 from prompt_library import SOP_CONFIG
 
-# Active models arranged from flagship to high-availability fallbacks
 ACTIVE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.6-flash",
@@ -17,12 +18,25 @@ def evaluate_content(
     category: str,
     subject: str,
     content: str,
-    api_key: str,
+    api_key: str = None,
     max_retries_per_model: int = 3,
 ) -> dict:
     config = SOP_CONFIG.get(category)
     if not config:
         raise ValueError(f"Category '{category}' is not configured.")
+
+    # If no key passed from UI, fetch automatically from Streamlit Secrets or environment
+    if not api_key:
+        api_key = st.secrets.get("GEMINI_API_KEY", "") or os.getenv(
+            "GEMINI_API_KEY", ""
+        )
+
+    api_key = str(api_key).strip().replace('"', "").replace("'", "")
+
+    if not api_key:
+        raise ValueError(
+            "API Key is missing. Please provide it in the sidebar or configure GEMINI_API_KEY in Streamlit Secrets."
+        )
 
     client = genai.Client(api_key=api_key)
 
@@ -97,7 +111,7 @@ Output strictly valid JSON matching this schema:
             except Exception as e:
                 err_text = str(e)
 
-                # Catch temporary Google server load errors and wait before retrying
+                # Retry on temporary traffic surges (503 / 429)
                 if (
                     "503" in err_text
                     or "429" in err_text
@@ -111,10 +125,9 @@ Output strictly valid JSON matching this schema:
                         )
                     continue
                 else:
-                    # Non-traffic error (e.g. model unsupported); move to next candidate immediately
                     error_log.append(f"[{model_name}]: {err_text}")
                     break
 
     raise RuntimeError(
-        "All candidate models failed. Log:\n" + "\n".join(error_log)
+        "All candidate models failed. Details:\n" + "\n".join(error_log)
     )
