@@ -1,38 +1,30 @@
 import json
-import streamlit as st
+import time
 from google import genai
 from prompt_library import SOP_CONFIG
 
-# Read key strictly from Streamlit Secrets
-api_key = st.secrets.get("GEMINI_API_KEY", "").strip()
-
-if not api_key:
-    raise ValueError(
-        "GEMINI_API_KEY is missing in Streamlit App Settings -> Secrets."
-    )
-
-client = genai.Client(api_key=api_key)
-# 1. Fetch API key safely from Streamlit Secrets
-api_key = st.secrets.get("GEMINI_API_KEY", None)
-
-if not api_key:
-    raise ValueError(
-        "GEMINI_API_KEY is missing. Please add it to your Streamlit App Settings -> Secrets."
-    )
-
-client = genai.Client(api_key=api_key)
-
-# 2. Only active, production models (no retired 2.x versions)
+# Active models arranged from flagship to high-availability fallbacks
 ACTIVE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
 ]
 
 
-def evaluate_content(category: str, subject: str, content: str) -> dict:
+def evaluate_content(
+    category: str,
+    subject: str,
+    content: str,
+    api_key: str,
+    max_retries_per_model: int = 3,
+) -> dict:
     config = SOP_CONFIG.get(category)
     if not config:
         raise ValueError(f"Category '{category}' is not configured.")
+
+    client = genai.Client(api_key=api_key)
 
     system_instruction = f"""You are an elite QA and SME auditor reviewing educational content for the subject '{subject}'.
 Category: {category}
@@ -87,22 +79,42 @@ Output strictly valid JSON matching this schema:
     user_message = f"Subject: {subject}\n\nDOCUMENT CONTENT TO EVALUATE:\n{content}"
 
     error_log = []
+
     for model_name in ACTIVE_MODELS:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=user_message,
-                config={
-                    "system_instruction": system_instruction,
-                    "response_mime_type": "application/json",
-                    "temperature": 0.1,
-                },
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            error_log.append(f"[{model_name}]: {str(e)}")
-            continue
+        for attempt in range(max_retries_per_model):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=user_message,
+                    config={
+                        "system_instruction": system_instruction,
+                        "response_mime_type": "application/json",
+                        "temperature": 0.1,
+                    },
+                )
+                return json.loads(response.text)
+
+            except Exception as e:
+                err_text = str(e)
+
+                # Catch temporary Google server load errors and wait before retrying
+                if (
+                    "503" in err_text
+                    or "429" in err_text
+                    or "UNAVAILABLE" in err_text
+                ):
+                    wait_time = 2 * (attempt + 1)
+                    time.sleep(wait_time)
+                    if attempt == max_retries_per_model - 1:
+                        error_log.append(
+                            f"[{model_name}]: Spikes persisted after {max_retries_per_model} retries."
+                        )
+                    continue
+                else:
+                    # Non-traffic error (e.g. model unsupported); move to next candidate immediately
+                    error_log.append(f"[{model_name}]: {err_text}")
+                    break
 
     raise RuntimeError(
-        "Cloud model call failed. Details:\n" + "\n".join(error_log)
+        "All candidate models failed. Log:\n" + "\n".join(error_log)
     )
