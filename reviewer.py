@@ -3,6 +3,15 @@ import streamlit as st
 from google import genai
 from prompt_library import SOP_CONFIG
 
+# Read key strictly from Streamlit Secrets
+api_key = st.secrets.get("GEMINI_API_KEY", "").strip()
+
+if not api_key:
+    raise ValueError(
+        "GEMINI_API_KEY is missing in Streamlit App Settings -> Secrets."
+    )
+
+client = genai.Client(api_key=api_key)
 # 1. Fetch API key safely from Streamlit Secrets
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 
